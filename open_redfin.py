@@ -10,15 +10,24 @@ import sys
 import argparse
 import re
 import statistics
+import json
+import csv
+from datetime import datetime
 from playwright.sync_api import sync_playwright
 
 
 def open_redfin_land_listings(zip_code: str):
     """
     Opens a Redfin land listings page in a browser for the given zip code.
+    Collects property data and returns statistics.
     
     Args:
         zip_code: The zip code to search for land listings
+    
+    Returns:
+        dict: Statistics dictionary with keys: zip_code, avg_price, median_price,
+              avg_lot_size, median_lot_size, total_properties, pages_processed
+              Returns None if no data collected or error occurred.
     """
     # Construct the Redfin URL
     url = (
@@ -245,9 +254,9 @@ def open_redfin_land_listings(zip_code: str):
             print(f"Processed {page_number} page(s)")
             print(f"Clicked through {total_properties_clicked} total properties.")
             
-            # Calculate and print statistics
+            # Calculate and return statistics
             if prices and lot_sizes:
-                print(f"\n=== Statistics ===")
+                print(f"\n=== Statistics for {zip_code} ===")
                 print(f"Total properties with complete data: {len(prices)}")
                 
                 # Price statistics
@@ -263,53 +272,120 @@ def open_redfin_land_listings(zip_code: str):
                 print(f"\nLot Size Statistics:")
                 print(f"  Average lot size: {avg_lot_size:.2f} acres")
                 print(f"  Median lot size: {median_lot_size:.2f} acres")
+                
+                browser.close()
+                
+                return {
+                    "zip_code": zip_code,
+                    "avg_price": avg_price,
+                    "median_price": median_price,
+                    "avg_lot_size": avg_lot_size,
+                    "median_lot_size": median_lot_size,
+                    "total_properties": len(prices),
+                    "pages_processed": page_number
+                }
             else:
-                print("\nNo complete property data collected for statistics.")
+                print(f"\nNo complete property data collected for {zip_code}.")
+                browser.close()
+                return None
             
         except Exception as e:
-            print(f"Warning: Could not complete pagination: {e}")
+            print(f"Warning: Could not complete pagination for {zip_code}: {e}")
             print("Continuing anyway...")
-        
-        # Keep browser open until user closes it
-        print("\nBrowser opened. Close the browser window when done.")
-        input("Press Enter to close the browser...")
-        
-        browser.close()
+            browser.close()
+            return None
 
 
 def main():
     """Main entry point for the script."""
     parser = argparse.ArgumentParser(
-        description="Open Redfin land listings page for a given zip code",
+        description="Process Redfin land listings for one or more zip codes",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python open_redfin.py 90210
-  python open_redfin.py 10001
+  python open_redfin.py 95667 90210 10001
         """
     )
     parser.add_argument(
-        "zip_code",
+        "zip_codes",
         type=str,
-        help="The zip code to search for land listings"
+        nargs="+",
+        help="One or more zip codes to search for land listings"
     )
     
     args = parser.parse_args()
     
-    # Validate zip code (basic check - should be 5 digits)
-    zip_code = args.zip_code.strip()
-    if not zip_code:
-        print("Error: Zip code cannot be empty", file=sys.stderr)
+    # Validate zip codes
+    zip_codes = [zc.strip() for zc in args.zip_codes if zc.strip()]
+    if not zip_codes:
+        print("Error: At least one zip code is required", file=sys.stderr)
         sys.exit(1)
     
-    try:
-        open_redfin_land_listings(zip_code)
-    except KeyboardInterrupt:
-        print("\n\nInterrupted by user", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+    # Process each zip code and collect results
+    results = []
+    
+    print(f"\n{'='*60}")
+    print(f"Processing {len(zip_codes)} zip code(s)")
+    print(f"{'='*60}\n")
+    
+    for i, zip_code in enumerate(zip_codes, 1):
+        print(f"\n{'='*60}")
+        print(f"Processing zip code {i}/{len(zip_codes)}: {zip_code}")
+        print(f"{'='*60}\n")
+        
+        try:
+            result = open_redfin_land_listings(zip_code)
+            if result:
+                results.append(result)
+        except KeyboardInterrupt:
+            print("\n\nInterrupted by user", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error processing {zip_code}: {e}", file=sys.stderr)
+            continue
+    
+    # Write results to files
+    if results:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        
+        # Write CSV file
+        csv_filename = f"results_{timestamp}.csv"
+        with open(csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['zip_code', 'avg_price', 'median_price', 'avg_lot_size', 
+                         'median_lot_size', 'total_properties', 'pages_processed']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            writer.writeheader()
+            for result in results:
+                writer.writerow(result)
+        
+        # Write JSON file
+        json_filename = f"results_{timestamp}.json"
+        with open(json_filename, 'w', encoding='utf-8') as jsonfile:
+            json.dump(results, jsonfile, indent=2)
+        
+        # Print summary
+        print(f"\n{'='*60}")
+        print("SUMMARY")
+        print(f"{'='*60}")
+        print(f"\nProcessed {len(results)} zip code(s) successfully:")
+        print(f"\n{'Zip Code':<12} {'Avg Price':<15} {'Median Price':<15} {'Avg Lot Size':<15} {'Median Lot Size':<15} {'Properties':<12}")
+        print("-" * 90)
+        
+        for result in results:
+            print(f"{result['zip_code']:<12} "
+                  f"${result['avg_price']:>12,.0f}  "
+                  f"${result['median_price']:>12,.0f}  "
+                  f"{result['avg_lot_size']:>12.2f} acres  "
+                  f"{result['median_lot_size']:>12.2f} acres  "
+                  f"{result['total_properties']:>10}")
+        
+        print(f"\nResults saved to:")
+        print(f"  CSV: {csv_filename}")
+        print(f"  JSON: {json_filename}")
+    else:
+        print("\nNo results collected. No files created.")
 
 
 if __name__ == "__main__":
