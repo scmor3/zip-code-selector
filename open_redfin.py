@@ -8,6 +8,8 @@ between 2-100 acres for a given zip code.
 
 import sys
 import argparse
+import re
+import statistics
 from playwright.sync_api import sync_playwright
 
 
@@ -104,6 +106,10 @@ def open_redfin_land_listings(zip_code: str):
             page_number = 1
             total_properties_clicked = 0
             
+            # Lists to store property data for statistics
+            prices = []
+            lot_sizes = []
+            
             # Loop through all pages
             while True:
                 print(f"\n--- Processing page {page_number} ---")
@@ -138,8 +144,57 @@ def open_redfin_land_listings(zip_code: str):
                         
                         try:
                             row.scroll_into_view_if_needed()
+                            
+                            # Extract price from table row before clicking
+                            price = None
+                            try:
+                                price_cell = row.locator("td.col_price")
+                                if price_cell.count() > 0:
+                                    price_text = price_cell.first.inner_text().strip()
+                                    # Extract number from text like "$64,500" or "$57,000"
+                                    # Remove $ and commas, then convert to float
+                                    price_clean = re.sub(r'[^\d.]', '', price_text)
+                                    if price_clean:
+                                        price = float(price_clean)
+                            except Exception as price_error:
+                                # Error extracting price, skip this property
+                                continue
+                            
+                            # If no price found, skip this property
+                            if price is None:
+                                continue
+                            
+                            # Click the row to update homecard
                             row.click(timeout=5000)
-                            page.wait_for_timeout(300)
+                            
+                            # Wait for homecard to update after row selection
+                            page.wait_for_timeout(500)
+                            
+                            # Extract lot size from homecard
+                            lot_size = None
+                            try:
+                                lot_size_element = page.locator("span[data-rf-test-name='homecard-amenities-lot-size']")
+                                
+                                if lot_size_element.count() > 0:
+                                    lot_size_text = lot_size_element.first.inner_text()
+                                    
+                                    # Extract just the number from text like "3.78 Acres"
+                                    match = re.search(r'([\d.]+)', lot_size_text)
+                                    if match:
+                                        lot_size = float(match.group(1))
+                                else:
+                                    # Lot size element not found, skip this property
+                                    continue
+                            except Exception as lot_size_error:
+                                # Error extracting lot size, skip this property
+                                continue
+                            
+                            # If we have both price and lot size, store and print them
+                            if price is not None and lot_size is not None:
+                                prices.append(price)
+                                lot_sizes.append(lot_size)
+                                print(f"    Property {idx + 1}: Price = ${price:,.0f}, Lot size = {lot_size} acres")
+                            
                         except Exception as click_error:
                             print(f"Warning: Could not click row {idx + 1}: {click_error}")
                             continue
@@ -189,6 +244,27 @@ def open_redfin_land_listings(zip_code: str):
             print(f"\n=== Pagination complete ===")
             print(f"Processed {page_number} page(s)")
             print(f"Clicked through {total_properties_clicked} total properties.")
+            
+            # Calculate and print statistics
+            if prices and lot_sizes:
+                print(f"\n=== Statistics ===")
+                print(f"Total properties with complete data: {len(prices)}")
+                
+                # Price statistics
+                avg_price = statistics.mean(prices)
+                median_price = statistics.median(prices)
+                print(f"\nPrice Statistics:")
+                print(f"  Average price: ${avg_price:,.2f}")
+                print(f"  Median price: ${median_price:,.2f}")
+                
+                # Lot size statistics
+                avg_lot_size = statistics.mean(lot_sizes)
+                median_lot_size = statistics.median(lot_sizes)
+                print(f"\nLot Size Statistics:")
+                print(f"  Average lot size: {avg_lot_size:.2f} acres")
+                print(f"  Median lot size: {median_lot_size:.2f} acres")
+            else:
+                print("\nNo complete property data collected for statistics.")
             
         except Exception as e:
             print(f"Warning: Could not complete pagination: {e}")
