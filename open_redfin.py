@@ -119,6 +119,10 @@ def open_redfin_land_listings(zip_code: str):
             prices = []
             lot_sizes = []
             
+            # List to track processed properties for duplicate detection
+            # Each entry: {price, sold_date, lot_size, has_street_address, index}
+            processed_properties = []
+            
             # Loop through all pages
             while True:
                 print(f"\n--- Processing page {page_number} ---")
@@ -179,6 +183,47 @@ def open_redfin_land_listings(zip_code: str):
                             # Wait for homecard to update after row selection
                             page.wait_for_timeout(500)
                             
+                            # Extract zip code from address tag in homecard
+                            homecard_zip = None
+                            has_street_address = False
+                            try:
+                                address_tag = page.locator("address")
+                                if address_tag.count() > 0:
+                                    address_text = address_tag.first.inner_text().strip()
+                                    # Extract zip code (5 digits) from address like "2650 Swansboro Rd, Placerville, CA 95667"
+                                    zip_match = re.search(r'\b(\d{5})\b', address_text)
+                                    if zip_match:
+                                        homecard_zip = zip_match.group(1)
+                                    
+                                    # Check if address has a street address (starts with number followed by text)
+                                    # This catches "123 Main St" and "3840 State Highway 49" but not "Springfield, MS 12345"
+                                    street_address_match = re.match(r'^\d+\s+[A-Za-z]', address_text)
+                                    if street_address_match:
+                                        has_street_address = True
+                            except Exception:
+                                pass
+                            
+                            # Extract sold date from homecard
+                            sold_date = None
+                            try:
+                                # Primary: Try using data-rf-test-id="home-sash"
+                                sold_date_element = page.locator("[data-rf-test-id='home-sash']")
+                                
+                                # Fallback: Try span.Badge--sold if primary doesn't work
+                                if sold_date_element.count() == 0:
+                                    sold_date_element = page.locator("span.Badge--sold")
+                                
+                                if sold_date_element.count() > 0:
+                                    sold_text = sold_date_element.first.inner_text().strip()
+                                    # Extract date pattern like "SOLD DEC 31, 2025" or "SOLD MAY 12, 2025"
+                                    # Look for "SOLD" followed by month, day, year
+                                    date_match = re.search(r'SOLD\s+([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})', sold_text, re.IGNORECASE)
+                                    if date_match:
+                                        # Normalize to uppercase format: "DEC 31, 2025"
+                                        sold_date = f"{date_match.group(1).upper()} {date_match.group(2)}, {date_match.group(3)}"
+                            except Exception:
+                                pass
+                            
                             # Extract lot size from homecard
                             lot_size = None
                             try:
@@ -198,11 +243,72 @@ def open_redfin_land_listings(zip_code: str):
                                 # Error extracting lot size, skip this property
                                 continue
                             
-                            # If we have both price and lot size, store and print them
+                            # If we have both price and lot size, validate zip code and check for duplicates
                             if price is not None and lot_size is not None:
-                                prices.append(price)
-                                lot_sizes.append(lot_size)
-                                print(f"    Property {idx + 1}: Price = ${price:,.0f}, Lot size = {lot_size} acres")
+                                # Skip property only if we found a zip code AND it doesn't match input zip code
+                                # If zip code extraction failed (None), include the property in calculations
+                                if homecard_zip is not None and homecard_zip != zip_code:
+                                    zip_display = homecard_zip if homecard_zip else "N/A"
+                                    print(f"    Property {idx + 1}: Skipped - Zip code mismatch (found {zip_display}, expected {zip_code})")
+                                    continue
+                                
+                                # Check for duplicates
+                                # Duplicate exists if: same price AND same sold_date AND same lot_size AND one doesn't have street address
+                                duplicate_index = None
+                                for i, processed in enumerate(processed_properties):
+                                    if (processed['price'] == price and 
+                                        processed['sold_date'] == sold_date and 
+                                        processed['lot_size'] == lot_size and
+                                        (not processed['has_street_address'] or not has_street_address)):
+                                        duplicate_index = i
+                                        break
+                                
+                                if duplicate_index is not None:
+                                    # Duplicate found
+                                    existing = processed_properties[duplicate_index]
+                                    
+                                    # If existing doesn't have street address and new one does: replace existing
+                                    if not existing['has_street_address'] and has_street_address:
+                                        # Remove existing from lists
+                                        prices.pop(duplicate_index)
+                                        lot_sizes.pop(duplicate_index)
+                                        # Add new one
+                                        prices.append(price)
+                                        lot_sizes.append(lot_size)
+                                        # Update tracking list
+                                        processed_properties[duplicate_index] = {
+                                            'price': price,
+                                            'sold_date': sold_date,
+                                            'lot_size': lot_size,
+                                            'has_street_address': has_street_address,
+                                            'index': idx + 1
+                                        }
+                                        zip_display = homecard_zip if homecard_zip else "N/A"
+                                        sold_date_display = sold_date if sold_date else "N/A"
+                                        print(f"    Property {idx + 1}: Replaced duplicate (Property {existing['index']}) - Has street address")
+                                        print(f"      Price = ${price:,.0f}, Lot size = {lot_size} acres, Zip code = {zip_display}, Sold date = {sold_date_display}, Has street address = Yes")
+                                    else:
+                                        # New one doesn't have street address (or both don't): skip new, keep existing
+                                        zip_display = homecard_zip if homecard_zip else "N/A"
+                                        sold_date_display = sold_date if sold_date else "N/A"
+                                        street_address_display = "Yes" if has_street_address else "No"
+                                        print(f"    Property {idx + 1}: Skipped - Duplicate of Property {existing['index']} (kept Property {existing['index']})")
+                                        print(f"      Price = ${price:,.0f}, Lot size = {lot_size} acres, Zip code = {zip_display}, Sold date = {sold_date_display}, Has street address = {street_address_display}")
+                                else:
+                                    # No duplicate found, add to lists
+                                    prices.append(price)
+                                    lot_sizes.append(lot_size)
+                                    processed_properties.append({
+                                        'price': price,
+                                        'sold_date': sold_date,
+                                        'lot_size': lot_size,
+                                        'has_street_address': has_street_address,
+                                        'index': idx + 1
+                                    })
+                                    zip_display = homecard_zip if homecard_zip else "N/A"
+                                    sold_date_display = sold_date if sold_date else "N/A"
+                                    street_address_display = "Yes" if has_street_address else "No"
+                                    print(f"    Property {idx + 1}: Price = ${price:,.0f}, Lot size = {lot_size} acres, Zip code = {zip_display}, Sold date = {sold_date_display}, Has street address = {street_address_display}")
                             
                         except Exception as click_error:
                             print(f"Warning: Could not click row {idx + 1}: {click_error}")
