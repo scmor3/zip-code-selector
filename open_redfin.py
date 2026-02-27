@@ -219,10 +219,11 @@ def open_redfin_land_listings(zip_code: str):
                                         if zip_match:
                                             homecard_zip = zip_match.group(1)
                                         
-                                        # Check if address has a street address (starts with number followed by text)
-                                        # This catches "123 Main St" and "3840 State Highway 49" but not "Springfield, MS 12345"
-                                        street_address_match = re.match(r'^\d+\s+[A-Za-z]', address_text)
-                                        if street_address_match:
+                                        # Check if address has a street address by counting commas
+                                        # Addresses with street addresses typically have 2+ commas: "123 Main St, City, State ZIP"
+                                        # Addresses without street addresses typically have 1 comma: "City, State ZIP"
+                                        comma_count = address_text.count(',')
+                                        if comma_count >= 2:
                                             has_street_address = True
                             except Exception:
                                 pass
@@ -275,11 +276,15 @@ def open_redfin_land_listings(zip_code: str):
                             
                             # If we have both price and lot size, validate zip code and check for duplicates
                             if price is not None and lot_size is not None:
+                                # Prepare display values for all properties (used for both kept and skipped)
+                                zip_display = homecard_zip if homecard_zip else "N/A"
+                                sold_date_display = sold_date if sold_date else "N/A"
+                                street_address_display = "Yes" if has_street_address else "No"
+                                
                                 # Skip property only if we found a zip code AND it doesn't match input zip code
                                 # If zip code extraction failed (None), include the property in calculations
                                 if homecard_zip is not None and homecard_zip != zip_code:
-                                    zip_display = homecard_zip if homecard_zip else "N/A"
-                                    print(f"    Property {idx + 1}: Skipped - Zip code mismatch (found {zip_display}, expected {zip_code})")
+                                    print(f"    Property {idx + 1}: Skipped - Zip code mismatch (found {zip_display}, expected {zip_code}) | Price = ${price:,.0f}, Lot size = {lot_size} acres, Zip code = {zip_display}, Sold date = {sold_date_display}, Has street address = {street_address_display}")
                                     continue
                                 
                                 # Check for duplicates
@@ -313,17 +318,10 @@ def open_redfin_land_listings(zip_code: str):
                                             'has_street_address': has_street_address,
                                             'index': idx + 1
                                         }
-                                        zip_display = homecard_zip if homecard_zip else "N/A"
-                                        sold_date_display = sold_date if sold_date else "N/A"
-                                        print(f"    Property {idx + 1}: Replaced duplicate (Property {existing['index']}) - Has street address")
-                                        print(f"      Price = ${price:,.0f}, Lot size = {lot_size} acres, Zip code = {zip_display}, Sold date = {sold_date_display}, Has street address = Yes")
+                                        print(f"    Property {idx + 1}: Replaced duplicate (Property {existing['index']}) - Has street address | Price = ${price:,.0f}, Lot size = {lot_size} acres, Zip code = {zip_display}, Sold date = {sold_date_display}, Has street address = Yes")
                                     else:
                                         # New one doesn't have street address (or both don't): skip new, keep existing
-                                        zip_display = homecard_zip if homecard_zip else "N/A"
-                                        sold_date_display = sold_date if sold_date else "N/A"
-                                        street_address_display = "Yes" if has_street_address else "No"
-                                        print(f"    Property {idx + 1}: Skipped - Duplicate of Property {existing['index']} (kept Property {existing['index']})")
-                                        print(f"      Price = ${price:,.0f}, Lot size = {lot_size} acres, Zip code = {zip_display}, Sold date = {sold_date_display}, Has street address = {street_address_display}")
+                                        print(f"    Property {idx + 1}: Skipped - Duplicate of Property {existing['index']} (kept Property {existing['index']}) | Price = ${price:,.0f}, Lot size = {lot_size} acres, Zip code = {zip_display}, Sold date = {sold_date_display}, Has street address = {street_address_display}")
                                 else:
                                     # No duplicate found, add to lists
                                     prices.append(price)
@@ -335,9 +333,6 @@ def open_redfin_land_listings(zip_code: str):
                                         'has_street_address': has_street_address,
                                         'index': idx + 1
                                     })
-                                    zip_display = homecard_zip if homecard_zip else "N/A"
-                                    sold_date_display = sold_date if sold_date else "N/A"
-                                    street_address_display = "Yes" if has_street_address else "No"
                                     print(f"    Property {idx + 1}: Price = ${price:,.0f}, Lot size = {lot_size} acres, Zip code = {zip_display}, Sold date = {sold_date_display}, Has street address = {street_address_display}")
                             
                         except Exception as click_error:
