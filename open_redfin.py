@@ -177,31 +177,61 @@ def open_redfin_land_listings(zip_code: str):
                             if price is None:
                                 continue
                             
+                            # Extract zip code from table row address link href (fallback source)
+                            # This is reliable because we're already processing this specific row
+                            table_row_zip = None
+                            try:
+                                address_link = row.locator("td.col_address a.address")
+                                if address_link.count() > 0:
+                                    href = address_link.first.get_attribute("href") or ""
+                                    # Extract zip code from href like "/CA/Diamond-Springs/4301-Joseph-Ln-95619/home/167344827"
+                                    # Look for pattern: -{5digits}/home/
+                                    zip_match = re.search(r'-(\d{5})/home/', href)
+                                    if zip_match:
+                                        table_row_zip = zip_match.group(1)
+                            except Exception:
+                                pass
+                            
                             # Click the row to update homecard
                             row.click(timeout=5000)
                             
                             # Wait for homecard to update after row selection
                             page.wait_for_timeout(500)
                             
-                            # Extract zip code from address tag in homecard
+                            # Extract zip code from address in homecard (primary source)
                             homecard_zip = None
                             has_street_address = False
                             try:
-                                address_tag = page.locator("address")
-                                if address_tag.count() > 0:
-                                    address_text = address_tag.first.inner_text().strip()
-                                    # Extract zip code (5 digits) from address like "2650 Swansboro Rd, Placerville, CA 95667"
-                                    zip_match = re.search(r'\b(\d{5})\b', address_text)
-                                    if zip_match:
-                                        homecard_zip = zip_match.group(1)
+                                # Use the a.bp-Homecard__Address element which is the main address link in the homecard
+                                # Note the double underscore in the class name (bp-Homecard__Address)
+                                homecard_address_link = page.locator("a.bp-Homecard__Address")
+                                
+                                if homecard_address_link.count() > 0:
+                                    # Try getting text from innerText or title attribute
+                                    address_text = homecard_address_link.first.inner_text().strip()
+                                    if not address_text:
+                                        # Fallback to title attribute if innerText is empty
+                                        address_text = homecard_address_link.first.get_attribute("title") or ""
                                     
-                                    # Check if address has a street address (starts with number followed by text)
-                                    # This catches "123 Main St" and "3840 State Highway 49" but not "Springfield, MS 12345"
-                                    street_address_match = re.match(r'^\d+\s+[A-Za-z]', address_text)
-                                    if street_address_match:
-                                        has_street_address = True
+                                    if address_text:
+                                        # Extract zip code (5 digits) from address like "2650 Swansboro Rd, Placerville, CA 95667"
+                                        zip_match = re.search(r'\b(\d{5})\b', address_text)
+                                        if zip_match:
+                                            homecard_zip = zip_match.group(1)
+                                        
+                                        # Check if address has a street address (starts with number followed by text)
+                                        # This catches "123 Main St" and "3840 State Highway 49" but not "Springfield, MS 12345"
+                                        street_address_match = re.match(r'^\d+\s+[A-Za-z]', address_text)
+                                        if street_address_match:
+                                            has_street_address = True
                             except Exception:
                                 pass
+                            
+                            # Use homecard zip if available, otherwise fallback to table row zip
+                            final_zip = homecard_zip if homecard_zip is not None else table_row_zip
+                            
+                            # Update homecard_zip for use in validation logic below
+                            homecard_zip = final_zip
                             
                             # Extract sold date from homecard
                             sold_date = None
