@@ -177,29 +177,16 @@ def open_redfin_land_listings(zip_code: str):
                             if price is None:
                                 continue
                             
-                            # Extract zip code from table row address link href (fallback source)
-                            # This is reliable because we're already processing this specific row
-                            table_row_zip = None
-                            try:
-                                address_link = row.locator("td.col_address a.address")
-                                if address_link.count() > 0:
-                                    href = address_link.first.get_attribute("href") or ""
-                                    # Extract zip code from href like "/CA/Diamond-Springs/4301-Joseph-Ln-95619/home/167344827"
-                                    # Look for pattern: -{5digits}/home/
-                                    zip_match = re.search(r'-(\d{5})/home/', href)
-                                    if zip_match:
-                                        table_row_zip = zip_match.group(1)
-                            except Exception:
-                                pass
-                            
                             # Click the row to update homecard
                             row.click(timeout=5000)
                             
-                            # Wait for homecard to update after row selection
+                            # Wait for row to be selected and homecard to update
                             page.wait_for_timeout(500)
                             
-                            # Extract zip code from address in homecard (primary source)
-                            homecard_zip = None
+                            # Extract zip code from homecard address (primary source)
+                            # When a property is selected, there's only one a.bp-Homecard__Address element
+                            # This is more reliable than table row href which may have "Unknown" instead of zip code
+                            final_zip = None
                             has_street_address = False
                             try:
                                 # Use the a.bp-Homecard__Address element which is the main address link in the homecard
@@ -207,17 +194,17 @@ def open_redfin_land_listings(zip_code: str):
                                 homecard_address_link = page.locator("a.bp-Homecard__Address")
                                 
                                 if homecard_address_link.count() > 0:
-                                    # Try getting text from innerText or title attribute
+                                    # Get the text content which includes the full address with zip code
+                                    # Example: "10404 State Highway 49, Coulterville, CA 95311"
                                     address_text = homecard_address_link.first.inner_text().strip()
-                                    if not address_text:
-                                        # Fallback to title attribute if innerText is empty
-                                        address_text = homecard_address_link.first.get_attribute("title") or ""
                                     
                                     if address_text:
-                                        # Extract zip code (5 digits) from address like "2650 Swansboro Rd, Placerville, CA 95667"
-                                        zip_match = re.search(r'\b(\d{5})\b', address_text)
+                                        # Extract zip code (5 digits) from address
+                                        # Look for state abbreviation (2 letters) followed by zip code (5 digits)
+                                        # This avoids matching street numbers like "10902" in "10902 Stout Ln, Coulterville, CA 95311"
+                                        zip_match = re.search(r'[A-Z]{2}\s+(\d{5})\b', address_text)
                                         if zip_match:
-                                            homecard_zip = zip_match.group(1)
+                                            final_zip = zip_match.group(1)
                                         
                                         # Check if address has a street address by counting commas
                                         # Addresses with street addresses typically have 2+ commas: "123 Main St, City, State ZIP"
@@ -228,8 +215,22 @@ def open_redfin_land_listings(zip_code: str):
                             except Exception:
                                 pass
                             
-                            # Use homecard zip if available, otherwise fallback to table row zip
-                            final_zip = homecard_zip if homecard_zip is not None else table_row_zip
+                            # Fallback: Extract zip code from selected row's href if homecard extraction failed
+                            if final_zip is None:
+                                try:
+                                    selected_row = page.locator("tr.selected.tableRow")
+                                    if selected_row.count() > 0:
+                                        address_link = selected_row.locator("td.col_address a.address")
+                                        if address_link.count() > 0:
+                                            href = address_link.first.get_attribute("href") or ""
+                                            # Extract zip code from href like "/CA/Coulterville/10902-Stout-Ln-95311/home/119805132"
+                                            # Look for pattern: -{5digits}/home/
+                                            zip_match = re.search(r'-(\d{5})/home/', href)
+                                            if zip_match:
+                                                final_zip = zip_match.group(1)
+                                                print(f"      (Using fallback: extracted zip from selected row href)")
+                                except Exception:
+                                    pass
                             
                             # Update homecard_zip for use in validation logic below
                             homecard_zip = final_zip
