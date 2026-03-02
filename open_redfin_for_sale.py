@@ -9,6 +9,7 @@ between 2-100 acres for a given zip code.
 import sys
 import argparse
 import re
+import statistics
 from playwright.sync_api import sync_playwright
 
 
@@ -95,21 +96,38 @@ def open_redfin_for_sale_listings(zip_code: str):
             print(f"Warning: Could not activate table layout: {e}")
             print("Continuing anyway...")
         
-        # Wait for table to load and click through each property row
+        # Wait for table to load and click through each property row with pagination
         try:
             print("Waiting for table to load...")
             
             # Give the table a moment to render after switching to table view
             page.wait_for_timeout(2000)
             
-            # Get the first tbody with class "tableList" from the correct hierarchy
-            # Structure: div.TableBody.reversePosition > div.ReactDataTable.tableBody > table > tbody.tableList
-            all_tbodies = page.locator("div.TableBody.reversePosition div.ReactDataTable.tableBody tbody.tableList")
-            tbody_count = all_tbodies.count()
+            # Initialize pagination variables
+            page_number = 1
+            total_properties_clicked = 0
+            property_counter = 0  # Global counter for property indexing across pages
             
-            if tbody_count == 0:
-                print("No table body found.")
-            else:
+            # List to store property data for statistics
+            properties = []
+            
+            # List to track processed properties for duplicate detection
+            # Each entry: {price, days_on_market, description, lot_size, index}
+            processed_properties = []
+            
+            # Loop through all pages
+            while True:
+                print(f"\n--- Processing page {page_number} ---")
+                
+                # Get the first tbody with class "tableList" from the correct hierarchy
+                # Structure: div.TableBody.reversePosition > div.ReactDataTable.tableBody > table > tbody.tableList
+                all_tbodies = page.locator("div.TableBody.reversePosition div.ReactDataTable.tableBody tbody.tableList")
+                tbody_count = all_tbodies.count()
+                
+                if tbody_count == 0:
+                    print("No table body found. Exiting pagination loop.")
+                    break
+                
                 first_table_body = all_tbodies.first
                 
                 # Get rows from the first tbody
@@ -122,12 +140,13 @@ def open_redfin_for_sale_listings(zip_code: str):
                     row_count = first_tbody_table_rows.count()
                 
                 if row_count > 0:
-                    print(f"Found {row_count} property rows in the first table.")
+                    print(f"Found {row_count} property rows on page {page_number}.")
                     print("Clicking through each property...")
                     
                     # Click through each row from the first tbody
                     for idx in range(row_count):
                         row = first_tbody_table_rows.nth(idx)
+                        property_counter += 1
                         
                         try:
                             row.scroll_into_view_if_needed()
@@ -192,6 +211,21 @@ def open_redfin_for_sale_listings(zip_code: str):
                                 except Exception:
                                     pass
                             
+                            # Extract days on market from selected table row
+                            days_on_market = None
+                            try:
+                                selected_row = page.locator("tr.selected.tableRow")
+                                if selected_row.count() > 0:
+                                    days_cell = selected_row.locator("td.col_days")
+                                    if days_cell.count() > 0:
+                                        days_text = days_cell.first.inner_text().strip()
+                                        # Extract number from text like "836 days" or "836 days == $0"
+                                        match = re.search(r'(\d+)\s*days', days_text, re.IGNORECASE)
+                                        if match:
+                                            days_on_market = int(match.group(1))
+                            except Exception:
+                                pass
+                            
                             # Extract lot size from homecard
                             lot_size = None
                             try:
@@ -207,24 +241,144 @@ def open_redfin_for_sale_listings(zip_code: str):
                             except Exception:
                                 pass
                             
+                            # Extract property description from homecard
+                            description = None
+                            try:
+                                # The description is in div.ListingRemarks > p
+                                description_element = page.locator("div.ListingRemarks p")
+                                
+                                if description_element.count() > 0:
+                                    description = description_element.first.inner_text().strip()
+                            except Exception:
+                                pass
+                            
                             # Print property information
                             price_display = f"${price:,.0f}" if price is not None else "N/A"
                             lot_size_display = f"{lot_size} acres" if lot_size is not None else "N/A"
                             zip_display = final_zip if final_zip else "N/A"
-                            print(f"    Property {idx + 1}/{row_count}: Price = {price_display}, Lot size = {lot_size_display}, Zip code = {zip_display}")
+                            days_display = f"{days_on_market} days" if days_on_market is not None else "N/A"
+                            description_display = description if description else "N/A"
+                            print(f"    Property {property_counter}: Price = {price_display}, Lot size = {lot_size_display}, Zip code = {zip_display}, Days on market = {days_display}")
+                            print(f"      Description: {description_display}")
+                            
+                            # Store property data for statistics (only if we have price, lot_size, and days_on_market)
+                            if price is not None and lot_size is not None and days_on_market is not None:
+                                # Check for duplicates: same price, days_on_market, description, and lot_size
+                                # Normalize description to empty string if None for comparison
+                                description_normalized = description if description else ""
+                                
+                                is_duplicate = False
+                                duplicate_index = None
+                                
+                                for i, processed in enumerate(processed_properties):
+                                    if (processed['price'] == price and 
+                                        processed['days_on_market'] == days_on_market and 
+                                        processed['description'] == description_normalized and
+                                        processed['lot_size'] == lot_size):
+                                        is_duplicate = True
+                                        duplicate_index = i
+                                        break
+                                
+                                if is_duplicate:
+                                    # Duplicate found, skip this property
+                                    print(f"      Skipped - Duplicate of Property {processed_properties[duplicate_index]['index']}")
+                                else:
+                                    # Not a duplicate, add to lists
+                                    properties.append({
+                                        'price': price,
+                                        'lot_size': lot_size,
+                                        'days_on_market': days_on_market
+                                    })
+                                    processed_properties.append({
+                                        'price': price,
+                                        'days_on_market': days_on_market,
+                                        'description': description_normalized,
+                                        'lot_size': lot_size,
+                                        'index': property_counter
+                                    })
                         except Exception as click_error:
-                            print(f"Warning: Could not click row {idx + 1}: {click_error}")
+                            print(f"Warning: Could not click row {property_counter}: {click_error}")
                             continue
                     
-                    print(f"Finished clicking through {row_count} properties.")
+                    total_properties_clicked += row_count
+                    print(f"Finished clicking through {row_count} properties on page {page_number}.")
                 else:
-                    print("No property rows found in the first table.")
+                    print(f"No property rows found on page {page_number}.")
+                
+                # Check for next page button
+                next_button = page.locator("button.PageArrow.PageArrow_direction--next, button[aria-label='next']")
+                next_button_count = next_button.count()
+                
+                if next_button_count > 0:
+                    # Check if button is visible and not hidden
+                    try:
+                        is_visible = next_button.first.is_visible()
+                        has_hidden_class = next_button.first.evaluate("""
+                            el => el.classList.contains('PageArrow--hidden')
+                        """)
+                        
+                        if is_visible and not has_hidden_class:
+                            print(f"Next page button found. Clicking to go to page {page_number + 1}...")
+                            next_button.first.click(timeout=5000)
+                            
+                            # Wait for new page to load
+                            page.wait_for_timeout(2000)
+                            
+                            # Wait for table to update (wait for rows to change or page to load)
+                            try:
+                                page.wait_for_selector("tr.tableRow", state="visible", timeout=10000)
+                            except:
+                                pass
+                            
+                            page_number += 1
+                            continue
+                        else:
+                            print("Next button exists but is hidden or not visible. No more pages.")
+                            break
+                    except Exception as next_error:
+                        print(f"Error checking/clicking next button: {next_error}")
+                        break
+                else:
+                    print("No next page button found. Reached last page.")
+                    break
+            
+            print(f"\n=== Pagination complete ===")
+            print(f"Processed {page_number} page(s)")
+            print(f"Clicked through {total_properties_clicked} total properties.")
+            
+            # Calculate and print statistics
+            if properties:
+                print("\n" + "="*60)
+                print("STATISTICS")
+                print("="*60)
+                
+                # Extract lists for calculations
+                prices = [p['price'] for p in properties]
+                lot_sizes = [p['lot_size'] for p in properties]
+                days_on_market_list = [p['days_on_market'] for p in properties]
+                
+                # Calculate averages
+                avg_price = statistics.mean(prices)
+                avg_lot_size = statistics.mean(lot_sizes)
+                avg_days = statistics.mean(days_on_market_list)
+                
+                # Calculate medians
+                median_price = statistics.median(prices)
+                median_lot_size = statistics.median(lot_sizes)
+                median_days = statistics.median(days_on_market_list)
+                
+                # Round and display
+                print(f"Average sale price: ${round(avg_price):,}")
+                print(f"Median sale price: ${round(median_price):,}")
+                print(f"Average lot size: {round(avg_lot_size, 1)} acres")
+                print(f"Median lot size: {round(median_lot_size, 1)} acres")
+                print(f"Average days on market: {round(avg_days)} days")
+                print("="*60)
+            else:
+                print("\nNo complete property data collected for statistics.")
         except Exception as e:
-            print(f"Warning: Could not complete property clicking: {e}")
+            print(f"Warning: Could not complete pagination for {zip_code}: {e}")
             print("Continuing anyway...")
-        
-        print("\nBrowser opened. Close the browser window when done.")
-        input("Press Enter to close the browser...")
         
         browser.close()
 
