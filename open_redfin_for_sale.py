@@ -110,6 +110,7 @@ def open_redfin_for_sale_listings(zip_code: str):
             page_number = 1
             total_properties_clicked = 0
             property_counter = 0  # Global counter for property indexing across pages
+            row_click_errors = 0
             
             # List to store property data for statistics
             properties = []
@@ -168,7 +169,33 @@ def open_redfin_for_sale_listings(zip_code: str):
                             except Exception:
                                 pass
                             
-                            row.click(timeout=5000)
+                            # Clicking rows can intermittently time out due to transient overlays,
+                            # virtualization/re-rendering, or the row not being "stable" yet.
+                            # Use a small retry loop with a longer timeout, then a force-click fallback.
+                            clicked = False
+                            last_click_error = None
+                            for attempt in range(3):
+                                try:
+                                    row.scroll_into_view_if_needed()
+                                    row.click(timeout=15000)
+                                    clicked = True
+                                    break
+                                except Exception as e:
+                                    last_click_error = e
+                                    # Brief pause, then retry
+                                    page.wait_for_timeout(400)
+                            
+                            if not clicked:
+                                # Final fallback: force click (can help if something is briefly intercepting clicks)
+                                try:
+                                    row.scroll_into_view_if_needed()
+                                    row.click(timeout=15000, force=True)
+                                    clicked = True
+                                except Exception as e:
+                                    last_click_error = e
+                            
+                            if not clicked:
+                                raise Exception(last_click_error)
                             
                             # Wait a moment for row to be selected and homecard to update
                             page.wait_for_timeout(500)
@@ -260,9 +287,7 @@ def open_redfin_for_sale_listings(zip_code: str):
                             lot_size_display = f"{lot_size} acres" if lot_size is not None else "N/A"
                             zip_display = final_zip if final_zip else "N/A"
                             days_display = f"{days_on_market} days" if days_on_market is not None else "N/A"
-                            description_display = description if description else "N/A"
                             print(f"    Property {property_counter}: Price = {price_display}, Lot size = {lot_size_display}, Zip code = {zip_display}, Days on market = {days_display}")
-                            print(f"      Description: {description_display}")
                             
                             # Store property data for statistics (only if we have price, lot_size, and days_on_market)
                             if price is not None and lot_size is not None and days_on_market is not None:
@@ -301,6 +326,7 @@ def open_redfin_for_sale_listings(zip_code: str):
                                     })
                         except Exception as click_error:
                             print(f"Warning: Could not click row {property_counter}: {click_error}")
+                            row_click_errors += 1
                             continue
                     
                     total_properties_clicked += row_count
@@ -348,6 +374,8 @@ def open_redfin_for_sale_listings(zip_code: str):
             print(f"\n=== Pagination complete ===")
             print(f"Processed {page_number} page(s)")
             print(f"Clicked through {total_properties_clicked} total properties.")
+            if row_click_errors > 0:
+                print(f"WARNING: Encountered {row_click_errors} row click error(s). Marking this zip code as errored.")
             
             # Calculate and print statistics
             if properties:
@@ -370,12 +398,28 @@ def open_redfin_for_sale_listings(zip_code: str):
                 median_lot_size = statistics.median(lot_sizes)
                 median_days = statistics.median(days_on_market_list)
                 
+                # Price-per-acre statistics (per property, then averaged)
+                price_per_acre_values = []
+                for price, lot in zip(prices, lot_sizes):
+                    if lot and lot > 0:
+                        price_per_acre_values.append(price / lot)
+                
+                if price_per_acre_values:
+                    avg_price_per_acre = statistics.mean(price_per_acre_values)
+                    median_price_per_acre = statistics.median(price_per_acre_values)
+                else:
+                    avg_price_per_acre = 0.0
+                    median_price_per_acre = 0.0
+                
                 # Round and display
                 print(f"Average sale price: ${round(avg_price):,}")
                 print(f"Median sale price: ${round(median_price):,}")
                 print(f"Average lot size: {round(avg_lot_size, 1)} acres")
                 print(f"Median lot size: {round(median_lot_size, 1)} acres")
                 print(f"Average days on market: {round(avg_days)} days")
+                print(f"Median days on market: {round(median_days)} days")
+                print(f"Average price per acre (for sale): ${round(avg_price_per_acre):,}")
+                print(f"Median price per acre (for sale): ${round(median_price_per_acre):,}")
                 print("="*60)
                 
                 browser.close()
@@ -387,12 +431,31 @@ def open_redfin_for_sale_listings(zip_code: str):
                     "avg_lot_size": round(avg_lot_size, 1),
                     "median_lot_size": round(median_lot_size, 1),
                     "avg_days_on_market": round(avg_days),
+                    "median_days_on_market": round(median_days),
+                    "avg_price_per_acre": round(avg_price_per_acre),
+                    "median_price_per_acre": round(median_price_per_acre),
+                    "row_click_errors": row_click_errors,
                     "total_properties": len(properties),
                     "pages_processed": page_number
                 }
             else:
                 print("\nNo complete property data collected for statistics.")
                 browser.close()
+                if row_click_errors > 0:
+                    return {
+                        "zip_code": zip_code,
+                        "avg_price": 0,
+                        "median_price": 0,
+                        "avg_lot_size": 0.0,
+                        "median_lot_size": 0.0,
+                        "avg_days_on_market": 0,
+                        "median_days_on_market": 0,
+                        "avg_price_per_acre": 0,
+                        "median_price_per_acre": 0,
+                        "row_click_errors": row_click_errors,
+                        "total_properties": 0,
+                        "pages_processed": page_number,
+                    }
                 return None
         except Exception as e:
             print(f"Warning: Could not complete pagination for {zip_code}: {e}")
@@ -458,8 +521,8 @@ Examples:
         csv_filename = f"results_for_sale_{timestamp}.csv"
         with open(csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
             fieldnames = ['zip_code', 'avg_price', 'median_price', 'avg_lot_size', 
-                         'median_lot_size', 'avg_days_on_market', 'total_properties', 'pages_processed']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                         'median_lot_size', 'avg_days_on_market', 'median_days_on_market', 'total_properties', 'pages_processed']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction="ignore")
             
             writer.writeheader()
             for result in results:

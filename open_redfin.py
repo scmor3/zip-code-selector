@@ -114,6 +114,7 @@ def open_redfin_land_listings(zip_code: str):
             
             page_number = 1
             total_properties_clicked = 0
+            row_click_errors = 0
             
             # Lists to store property data for statistics
             prices = []
@@ -178,7 +179,31 @@ def open_redfin_land_listings(zip_code: str):
                                 continue
                             
                             # Click the row to update homecard
-                            row.click(timeout=5000)
+                            # Clicking rows can intermittently time out due to transient overlays,
+                            # virtualization/re-rendering, or the row not being "stable" yet.
+                            # Use a small retry loop with a longer timeout, then a force-click fallback.
+                            clicked = False
+                            last_click_error = None
+                            for attempt in range(3):
+                                try:
+                                    row.scroll_into_view_if_needed()
+                                    row.click(timeout=15000)
+                                    clicked = True
+                                    break
+                                except Exception as e:
+                                    last_click_error = e
+                                    page.wait_for_timeout(400)
+                            
+                            if not clicked:
+                                try:
+                                    row.scroll_into_view_if_needed()
+                                    row.click(timeout=15000, force=True)
+                                    clicked = True
+                                except Exception as e:
+                                    last_click_error = e
+                            
+                            if not clicked:
+                                raise Exception(last_click_error)
                             
                             # Wait for row to be selected and homecard to update
                             page.wait_for_timeout(500)
@@ -338,6 +363,7 @@ def open_redfin_land_listings(zip_code: str):
                             
                         except Exception as click_error:
                             print(f"Warning: Could not click row {idx + 1}: {click_error}")
+                            row_click_errors += 1
                             continue
                     
                     total_properties_clicked += row_count
@@ -385,6 +411,8 @@ def open_redfin_land_listings(zip_code: str):
             print(f"\n=== Pagination complete ===")
             print(f"Processed {page_number} page(s)")
             print(f"Clicked through {total_properties_clicked} total properties.")
+            if row_click_errors > 0:
+                print(f"WARNING: Encountered {row_click_errors} row click error(s). Marking this zip code as errored.")
             
             # Calculate and return statistics
             if prices and lot_sizes:
@@ -405,6 +433,23 @@ def open_redfin_land_listings(zip_code: str):
                 print(f"  Average lot size: {avg_lot_size:.2f} acres")
                 print(f"  Median lot size: {median_lot_size:.2f} acres")
                 
+                # Price-per-acre statistics (per property, then averaged)
+                price_per_acre_values = []
+                for price, lot in zip(prices, lot_sizes):
+                    if lot and lot > 0:
+                        price_per_acre_values.append(price / lot)
+                
+                if price_per_acre_values:
+                    avg_price_per_acre = statistics.mean(price_per_acre_values)
+                    median_price_per_acre = statistics.median(price_per_acre_values)
+                else:
+                    avg_price_per_acre = 0.0
+                    median_price_per_acre = 0.0
+                
+                print(f"\nPrice per Acre Statistics:")
+                print(f"  Average price per acre: ${avg_price_per_acre:,.2f}")
+                print(f"  Median price per acre: ${median_price_per_acre:,.2f}")
+                
                 browser.close()
                 
                 return {
@@ -413,12 +458,28 @@ def open_redfin_land_listings(zip_code: str):
                     "median_price": median_price,
                     "avg_lot_size": avg_lot_size,
                     "median_lot_size": median_lot_size,
+                    "avg_price_per_acre": avg_price_per_acre,
+                    "median_price_per_acre": median_price_per_acre,
+                    "row_click_errors": row_click_errors,
                     "total_properties": len(prices),
                     "pages_processed": page_number
                 }
             else:
                 print(f"\nNo complete property data collected for {zip_code}.")
                 browser.close()
+                if row_click_errors > 0:
+                    return {
+                        "zip_code": zip_code,
+                        "avg_price": 0.0,
+                        "median_price": 0.0,
+                        "avg_lot_size": 0.0,
+                        "median_lot_size": 0.0,
+                        "avg_price_per_acre": 0.0,
+                        "median_price_per_acre": 0.0,
+                        "row_click_errors": row_click_errors,
+                        "total_properties": 0,
+                        "pages_processed": page_number,
+                    }
                 return None
             
         except Exception as e:
@@ -486,7 +547,7 @@ Examples:
         with open(csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
             fieldnames = ['zip_code', 'avg_price', 'median_price', 'avg_lot_size', 
                          'median_lot_size', 'total_properties', 'pages_processed']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction="ignore")
             
             writer.writeheader()
             for result in results:
