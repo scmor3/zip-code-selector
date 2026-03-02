@@ -10,6 +10,9 @@ import sys
 import argparse
 import re
 import statistics
+import csv
+import json
+from datetime import datetime
 from playwright.sync_api import sync_playwright
 
 
@@ -349,7 +352,7 @@ def open_redfin_for_sale_listings(zip_code: str):
             # Calculate and print statistics
             if properties:
                 print("\n" + "="*60)
-                print("STATISTICS")
+                print(f"STATISTICS for {zip_code}")
                 print("="*60)
                 
                 # Extract lists for calculations
@@ -374,48 +377,121 @@ def open_redfin_for_sale_listings(zip_code: str):
                 print(f"Median lot size: {round(median_lot_size, 1)} acres")
                 print(f"Average days on market: {round(avg_days)} days")
                 print("="*60)
+                
+                browser.close()
+                
+                return {
+                    "zip_code": zip_code,
+                    "avg_price": round(avg_price),
+                    "median_price": round(median_price),
+                    "avg_lot_size": round(avg_lot_size, 1),
+                    "median_lot_size": round(median_lot_size, 1),
+                    "avg_days_on_market": round(avg_days),
+                    "total_properties": len(properties),
+                    "pages_processed": page_number
+                }
             else:
                 print("\nNo complete property data collected for statistics.")
+                browser.close()
+                return None
         except Exception as e:
             print(f"Warning: Could not complete pagination for {zip_code}: {e}")
             print("Continuing anyway...")
-        
-        browser.close()
+            browser.close()
+            return None
 
 
 def main():
     """Main entry point for the script."""
     parser = argparse.ArgumentParser(
-        description="Open Redfin for-sale land listings for a zip code",
+        description="Process Redfin for-sale land listings for one or more zip codes",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python open_redfin_for_sale.py 90210
-  python open_redfin_for_sale.py 95667
+  python open_redfin_for_sale.py 95667 90210 10001
         """
     )
     parser.add_argument(
-        "zip_code",
+        "zip_codes",
         type=str,
-        help="Zip code to search for for-sale land listings"
+        nargs="+",
+        help="One or more zip codes to search for for-sale land listings"
     )
     
     args = parser.parse_args()
     
-    # Validate zip code
-    zip_code = args.zip_code.strip()
-    if not zip_code:
-        print("Error: Zip code is required", file=sys.stderr)
+    # Validate zip codes
+    zip_codes = [zc.strip() for zc in args.zip_codes if zc.strip()]
+    if not zip_codes:
+        print("Error: At least one zip code is required", file=sys.stderr)
         sys.exit(1)
     
-    try:
-        open_redfin_for_sale_listings(zip_code)
-    except KeyboardInterrupt:
-        print("\n\nInterrupted by user", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+    # Process each zip code and collect results
+    results = []
+    
+    print(f"\n{'='*60}")
+    print(f"Processing {len(zip_codes)} zip code(s)")
+    print(f"{'='*60}\n")
+    
+    for i, zip_code in enumerate(zip_codes, 1):
+        print(f"\n{'='*60}")
+        print(f"Processing zip code {i}/{len(zip_codes)}: {zip_code}")
+        print(f"{'='*60}\n")
+        
+        try:
+            result = open_redfin_for_sale_listings(zip_code)
+            if result:
+                results.append(result)
+        except KeyboardInterrupt:
+            print("\n\nInterrupted by user", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error processing {zip_code}: {e}", file=sys.stderr)
+            continue
+    
+    # Write results to files
+    if results:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        
+        # Write CSV file
+        csv_filename = f"results_for_sale_{timestamp}.csv"
+        with open(csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['zip_code', 'avg_price', 'median_price', 'avg_lot_size', 
+                         'median_lot_size', 'avg_days_on_market', 'total_properties', 'pages_processed']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            writer.writeheader()
+            for result in results:
+                writer.writerow(result)
+        
+        # Write JSON file
+        json_filename = f"results_for_sale_{timestamp}.json"
+        with open(json_filename, 'w', encoding='utf-8') as jsonfile:
+            json.dump(results, jsonfile, indent=2)
+        
+        # Print summary
+        print(f"\n{'='*60}")
+        print("SUMMARY")
+        print(f"{'='*60}")
+        print(f"\nProcessed {len(results)} zip code(s) successfully:")
+        print(f"\n{'Zip Code':<12} {'Avg Price':<15} {'Median Price':<15} {'Avg Lot Size':<15} {'Median Lot Size':<15} {'Avg Days':<12} {'Properties':<12}")
+        print("-" * 105)
+        
+        for result in results:
+            print(f"{result['zip_code']:<12} "
+                  f"${result['avg_price']:>12,.0f}  "
+                  f"${result['median_price']:>12,.0f}  "
+                  f"{result['avg_lot_size']:>12.1f} acres  "
+                  f"{result['median_lot_size']:>12.1f} acres  "
+                  f"{result['avg_days_on_market']:>10} days  "
+                  f"{result['total_properties']:>10}")
+        
+        print(f"\nResults saved to:")
+        print(f"  CSV: {csv_filename}")
+        print(f"  JSON: {json_filename}")
+    else:
+        print("\nNo results collected. No files created.")
 
 
 if __name__ == "__main__":
