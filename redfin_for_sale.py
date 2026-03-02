@@ -471,8 +471,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python open_redfin_for_sale.py 90210
-  python open_redfin_for_sale.py 95667 90210 10001
+  python redfin_for_sale.py 90210
+  python redfin_for_sale.py 95667 90210 10001
         """
     )
     parser.add_argument(

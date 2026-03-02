@@ -3,8 +3,8 @@
 Combine Redfin Sold and For-Sale Land Listing Statistics
 
 Runs both:
-- open_redfin.open_redfin_land_listings (sold, last 12 months, 2–100 acres)
-- open_redfin_for_sale.open_redfin_for_sale_listings (for sale, 2–100 acres)
+- redfin_sold.open_redfin_land_listings (sold, last 12 months, 2–100 acres)
+- redfin_for_sale.open_redfin_for_sale_listings (for sale, 2–100 acres)
 
 for one or more zip codes, then writes a combined CSV (and JSON) with:
 
@@ -34,8 +34,8 @@ import json
 import sys
 from datetime import datetime
 
-from open_redfin import open_redfin_land_listings
-from open_redfin_for_sale import open_redfin_for_sale_listings
+from redfin_sold import open_redfin_land_listings
+from redfin_for_sale import open_redfin_for_sale_listings
 
 
 def safe_get(result: dict | None, key: str, default: float | int = 0):
